@@ -18,12 +18,12 @@ import javax.swing.*;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 
-@ScriptManifest(authors = "Chad [Xeroday]", name = "xPestControl", version = 1.77, website = "http:///www.node13.info/xPestControl/", description = "Flawless pest control. Start near the gangplank.")
+@ScriptManifest(authors = "Chad [Xeroday]", name = "xPestControl", version = 1.77, website = "http://node13.info/xeroday/pages/xpestcontrol.php", description = "Flawless pest control. Start near the gangplank.")
 public class xPestControl extends Script implements PaintListener, MouseListener, MessageListener {
 
     String state = "Loading up...";
     public static final String version = Double.toString(xPestControl.class.getAnnotation(ScriptManifest.class).version());
-    public static final String URL = "http:///www.node13.info/xPestControl/";
+    public static final String URL = "http://node13.info/xeroday/pages/xpestcontrol.php";
     private final RenderingHints antialiasing = new RenderingHints(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
     RSTile joinTile = null;
     RSTile boatTile = null;
@@ -132,6 +132,7 @@ public class xPestControl extends Script implements PaintListener, MouseListener
         startXP = skills.getCurrentExp(Skills.ATTACK) + skills.getCurrentExp(Skills.CONSTITUTION) + skills.getCurrentExp(Skills.DEFENSE) + skills.getCurrentExp(Skills.STRENGTH);
         log("Info: Make sure to raise your camera to the highest view.");
         log("Info: Click GUI to show/hide.");
+        log("Info: It is suggested to disable randoms fix clan vexilla.");
         return true;
     }
 
@@ -255,6 +256,10 @@ public class xPestControl extends Script implements PaintListener, MouseListener
                         mouse.click(gangplank.getPoint(), 1, 1, true);
                         sleep(666, 1337);
                     }
+                }
+                if (interfaces.getComponent(1107).isValid()) {
+                    interfaces.getComponent(1107, 157).doClick();
+                    sleep(2000);
                 }
                 break;
             case WalkSouth:
