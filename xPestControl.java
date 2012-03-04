@@ -18,7 +18,7 @@ import javax.swing.*;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 
-@ScriptManifest(authors = "Chad [Xeroday]", name = "xPestControl", version = 1.77, website = "http://node13.info/xeroday/pages/xpestcontrol.php", description = "Flawless pest control. Start near the gangplank.")
+@ScriptManifest(authors = "Chad [Xeroday]", name = "xPestControl", version = 1.78, website = "http://node13.info/xeroday/pages/xpestcontrol.php", description = "Flawless pest control. Start near the gangplank.")
 public class xPestControl extends Script implements PaintListener, MouseListener, MessageListener {
 
     String state = "Loading up...";
