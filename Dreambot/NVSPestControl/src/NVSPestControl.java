@@ -82,7 +82,7 @@ public class NVSPestControl extends AbstractScript {
             }
         };
         idleChecker.start();
-        new Thread(new Antiban()).start();
+//        new Thread(new Antiban()).start();
 
         startTime = System.currentTimeMillis();
         getSkillTracker().start();
