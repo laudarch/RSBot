@@ -4,13 +4,18 @@ import org.dreambot.api.methods.input.mouse.CrosshairState;
 import org.dreambot.api.methods.map.Area;
 import org.dreambot.api.methods.map.Tile;
 import org.dreambot.api.methods.skills.Skill;
+import org.dreambot.api.methods.tabs.Tab;
+import org.dreambot.api.randoms.RandomEvent;
 import org.dreambot.api.script.AbstractScript;
 import org.dreambot.api.script.Category;
 import org.dreambot.api.script.ScriptManifest;
+import org.dreambot.api.wrappers.interactive.Entity;
 import org.dreambot.api.wrappers.interactive.GameObject;
 import org.dreambot.api.wrappers.interactive.NPC;
+import org.dreambot.api.wrappers.interactive.Player;
 import org.dreambot.api.wrappers.widgets.message.Message;
 
+import javax.print.DocFlavor;
 import java.awt.*;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -18,6 +23,26 @@ import java.util.List;
 
 @ScriptManifest(author = "NVS", name = "NVSPestControl", version = 0.1, description = "Plays Pest Control", category = Category.MINIGAME)
 public class NVSPestControl extends AbstractScript {
+
+    // Per-game variables
+    private Tile squireTile;
+    private Tile knightTile;
+    private HashMap <String, Tile> portals = new HashMap<>();
+    private boolean wOpen, swOpen, seOpen, eOpen;
+
+    // Per user variables
+    private boolean fightMiddle; // Only fight in center
+    private boolean useQuickPrayer;
+    // Randomly selected
+    private boolean attackPortals;
+    private int damageThreshold; // At this damage, we attack portals even if attackPortals is disabled
+    private int distance; // Used in distance calculations
+    private int portalLiveHealth; // How much hp a portal needs to be considered alive
+    private int walkingInterval; // When to click next tile when walking
+    private int walkingAccuracy; // Higher is less accurate
+    private String randomPortal;
+    private int likelihood; // Chance of activating quick prayer at a given moment
+    private int responsiveness; // Lower == more responsive
 
     // Gangplank crossing information
     private Tile joinTile, boatTile;
@@ -29,20 +54,6 @@ public class NVSPestControl extends AbstractScript {
     private final Tile boatVeteran = new Tile(2634, 2653);
 
     private final Area outpostArea = new Area(new Tile(2686, 2686), new Tile(2626, 2626));
-
-    private boolean attackPortals = false;
-    private int damageThreshold = 75; // At this damage, we attack portals even if attackPortals is disabled
-    private boolean fightMiddle = false;
-    private int distance = 7;
-    private int portalLiveHealth = 1; // How much hp a portal needs to be considered alive
-
-    // Per-game variables
-    private Tile squireTile;
-    private Tile knightTile;
-    private HashMap <String, Tile> portals = new HashMap<>();
-    private boolean wOpen, swOpen, seOpen, eOpen;
-    private String randomPortal;
-    private int likelyhood = 65;
 
     private Thread idleChecker;
     private long lastActivity = 0; // Time when last player activity was recorded
@@ -59,12 +70,40 @@ public class NVSPestControl extends AbstractScript {
     }
 
     public void onStart() {
-        getMouse().getMouseSettings().setUseMiddleMouseInInteracts(false);
-        getMouse().getMouseSettings().setSpeed(100, 999999);
-        getClient().disableIdleMouse();
 
-        joinTile = joinNovice;
-        boatTile = boatNovice;
+        // Fill GUI
+        GUI gui = new GUI();
+        while (!gui.formComplete && getClient().getInstance().getScriptManager().isRunning()) {
+            if (!gui.isVisible()) gui.setVisible(true);
+            sleep(1000);
+        }
+        if (gui.boat == 1 && (isUserVIP() || isUserSponsor())) {
+            log("Intermediate boat selected.");
+            joinTile = joinIntermediate;
+            boatTile = boatIntermediate;
+        } else if (gui.boat == 2 && (isUserVIP() || isUserSponsor())) {
+            log("Veteran boat selected.");
+            joinTile = joinVeteran;
+            boatTile = boatVeteran;
+        } else {
+            log("Novice boat selected.");
+            joinTile = joinNovice;
+            boatTile = boatNovice;
+        }
+        fightMiddle = gui.fightCenter;
+        useQuickPrayer = gui.quickPrayer;
+
+        // Seed data
+        attackPortals = getLocalPlayer().getLevel() > 100*getClient().seededRandom();
+        damageThreshold = (int)(100*getClient().seededRandom()) - getLocalPlayer().getLevel();
+        distance = (int)(Calculations.random(6, 7)*getClient().seededRandom());
+        portalLiveHealth = Calculations.random(getLocalPlayer().getLevel()/6);
+        walkingInterval = (int)(8 * getClient().seededRandom());
+        walkingAccuracy = (int)(4.5 * getClient().seededRandom());
+        randomPortal = getClient().seededRandom() < 0.95 ? "w" : getClient().seededRandom() < 1 ? "sw" :
+                getClient().seededRandom() < 1.05 ? "e" : "se";
+        likelihood = (int)(700*getClient().seededRandom());
+        responsiveness = 300 - getLocalPlayer().getLevel();
 
         idleChecker = new Thread() {
             public void run() {
@@ -82,7 +121,6 @@ public class NVSPestControl extends AbstractScript {
             }
         };
         idleChecker.start();
-//        new Thread(new Antiban()).start();
 
         startTime = System.currentTimeMillis();
         getSkillTracker().start();
@@ -101,12 +139,15 @@ public class NVSPestControl extends AbstractScript {
             if (squireTile == null) { // New game
                 return State.WALKSOUTH;
             } else {
-                if (nearPortal() || (!getLocalPlayer().isMoving() && nearMobs()) || getLocalPlayer().isInCombat()) // We're near a live portal or mobs
+                if (nearPortal()
+                        || (!getLocalPlayer().isMoving() && nearMobs())
+                        || getLocalPlayer().isInCombat()
+                        || (fightMiddle && knightTile.distance(getLocalPlayer()) < distance))
                     return State.FIGHT;
                 if (wOpen || swOpen || seOpen || eOpen) { // Portals have opened but we aren't close to one
                     return State.WALKPORTAL;
                 } else { // No portals open
-                    if (getLocalPlayer().getY() > squireTile.getY() || (fightMiddle && knightTile.distance(getLocalPlayer()) > 5)) { // Walk to center
+                    if (getLocalPlayer().getY() > squireTile.getY() || (fightMiddle && knightTile.distance(getLocalPlayer()) >= distance)) { // Walk to center
                         return State.WALKCENTER;
                     }
                     return State.WALKRANDOMPORTAL;
@@ -120,20 +161,22 @@ public class NVSPestControl extends AbstractScript {
         switch (getState()) {
             case GANGPLANK:
                 reset();
+                getRandomManager().registerSolver(getRandomManager().getBreakSolver()); // Enable breaks
                 if (joinTile.distance(getLocalPlayer()) > 3) {
                     state = "Walking to gangplank";
-                    walk(joinTile, Calculations.nextGaussianRandom(6, 1), 2, 30000);
+                    getWalking().walk(joinTile);
                 } else {
                     state = "Clicking gangplank";
                     GameObject gangplank = getGameObjects().closest("Gangplank");
                     if (gangplank != null && gangplank.isOnScreen()) {
-                        gangplank.interact();
-                        sleep(777, 1337);
+                        gangplank.interact("Cross");
+                        sleep(responsiveness*2, responsiveness*3);
                     }
                 }
                 break;
             case WALKSOUTH:
                 state = "Starting game";
+                getRandomManager().unregisterSolver(RandomEvent.BREAK); // Disable breaks
                 NPC squire = getNpcs().closest(squireFilter);
                 if (squire != null) {
                     squireTile = squire.getTile();
@@ -144,8 +187,7 @@ public class NVSPestControl extends AbstractScript {
                     portals.put("se", new Tile(knightTile.getX() + 14, knightTile.getY() - 19));
                 }
                 activate();
-                randomPortal = portals.keySet().toArray()[Calculations.random(0, 4)].toString();
-                walk(knightTile.getRandomizedTile(3), Calculations.nextGaussianRandom(6, 1), 2, 30000);
+                walk(knightTile.getRandomizedTile(3));
                 break;
             case WALKPORTAL:
                 if (playerIdle && getNpcs().closest("Brawler") != null) {
@@ -157,13 +199,13 @@ public class NVSPestControl extends AbstractScript {
                 if (closest == null) return Calculations.random(1337, 2222);
                 Tile portal = portals.get(closest);
                 if (portal.distance(getLocalPlayer()) >= distance || (getWalking().getDestination() == null || getWalking().getDestination().distance(portal) > 5)) {
-                    walk(portal, Calculations.nextGaussianRandom(6, 1), 3, 30000);
-                    sleep((int) Calculations.nextGaussianRandom(1000, 333));
+                    walk(portal);
+                    sleep((int) Calculations.nextGaussianRandom(responsiveness*3, responsiveness));
                 }
                 break;
             case WALKCENTER:
                 state = "Walking to center";
-                walk(knightTile.getRandomizedTile(3), Calculations.nextGaussianRandom(6, 1), 2, 30000);
+                walk(knightTile.getRandomizedTile(3));
                 break;
             case WALKRANDOMPORTAL:
                 state = "Walking to random portal";
@@ -173,8 +215,8 @@ public class NVSPestControl extends AbstractScript {
                 }
                 if (getPortalHealth(randomPortal) > 0) {
                     if (portals.get(randomPortal).distance(getLocalPlayer()) >= distance || (getWalking().getDestination() == null || getWalking().getDestination().distance(portals.get(randomPortal)) > 5)) {
-                        walk(portals.get(randomPortal), Calculations.nextGaussianRandom(6, 1), 3, 30000);
-                        sleep((int) Calculations.nextGaussianRandom(1000, 333));
+                        walk(portals.get(randomPortal));
+                        sleep((int) Calculations.nextGaussianRandom(responsiveness*3, responsiveness));
                     }
                 } else {
                     randomPortal = portals.keySet().toArray()[Calculations.random(0, 4)].toString();
@@ -187,13 +229,12 @@ public class NVSPestControl extends AbstractScript {
                 if (getDialogues().canContinue()) getDialogues().clickContinue(); // Level ups
                 if (getWidgets().getChildWidget(548, 77).getText().equals("0")) { // We're dead
                     state = "Waiting to respawn";
-                    sleep(1337, 2222);
+                    sleep(responsiveness, 3*responsiveness);
                     break;
                 }
                 if (getLocalPlayer().getInteractingCharacter() == null || playerIdle) {
-                    if (getLocalPlayer().getInteractingCharacter() != null) { // We're interacting by not attacking
-                        if (!attack(getNpcs().closest("Brawler")))
-                            attack(getNpcs().closest("Shifter", "Brawler", "Defiler", "Ravager", "Torcher"));
+                    if (getLocalPlayer().getInteractingCharacter() != null && getNpcs().closest("Brawler") != null && getNpcs().closest("Brawler").distance(getLocalPlayer()) < 3) { // We're interacting by not attacking
+                        attack(getNpcs().closest("Brawler"));
                     } else {
                         if (attack(getNpcs().closest("Spinner"))) {
                         } else if ((attackPortals || enoughDamage(damageThreshold)) && attack(getNpcs().closest(portalFilter))) {
@@ -203,11 +244,16 @@ public class NVSPestControl extends AbstractScript {
                             attack(getNpcs().closest(portalFilter));
                         }
                     }
-                    sleep(666, 1337);
+                    sleep(responsiveness*2, responsiveness*3);
                 } else { // In combat
                     state = "In combat";
                     activate();
-                    sleep(666, 1337);
+                    if (getLocalPlayer().getInteractingCharacter().getName().equals("Portal")) {
+                        if (getNpcs().closest("Spinner") != null & getNpcs().closest("Spinner").distance(getLocalPlayer()) < 2)
+                            attack(getNpcs().closest("Spinner"));
+                    }
+                    antiban();
+                    sleep(responsiveness, 3*responsiveness);
                 }
                 break;
             case SLEEP:
@@ -220,10 +266,11 @@ public class NVSPestControl extends AbstractScript {
                         pointsGained = points - pointsStart;
                     }
                 }
-                sleep((int)Calculations.nextGaussianRandom(1000, 333));
+                antiban();
+                sleep((int)Calculations.nextGaussianRandom(responsiveness*3, responsiveness));
                 break;
         }
-        return 200;
+        return responsiveness;
     }
 
     /**
@@ -236,23 +283,16 @@ public class NVSPestControl extends AbstractScript {
         if (target.isOnScreen()) {
             state = "Attacking " + target.getName();
             int tolerance = Calculations.random(5, 10);
-            do {
-                if (getClient().getViewport().isOnGameScreen(target.getCenterPoint())) {
-                    getMouse().move(target.getCenterPoint());
-                    sleep(10, 15);
-                }
-                if (getMouse().getEntitiesOnCursor().size() > 0 && getMouse().getEntitiesOnCursor().contains(target)) {
-//                    if (getMouse().getEntitiesOnCursor().get(0).getName().equals(target.getName()))
-//                        getMouse().click();
-//                    else
-                        target.interact("Attack");
-                    sleep(30, 50);
-                }
-                tolerance--;
-            } while (tolerance > 0 && getMouse().getCrosshairState() != CrosshairState.INTERACTED && target.isOnScreen());
+            try {
+                do {
+                    target.interact("Attack");
+                    sleep(responsiveness/4, responsiveness/2);
+                    tolerance--;
+                } while (tolerance > 0 && getMouse().getCrosshairState() != CrosshairState.INTERACTED && target.isOnScreen());
+            } catch (ArrayIndexOutOfBoundsException ignore) {}
             return sleepUntilInteracting(target, 1500);
         } else {
-            walk(target.getTile().getRandomizedTile(2), Calculations.nextGaussianRandom(6, 1), 2, 30000);
+            walk(target.getTile().getRandomizedTile(2));
             sleep(666, 1337);
             return false;
         }
@@ -275,6 +315,11 @@ public class NVSPestControl extends AbstractScript {
             scale -= 0.2;
         }
         return testTile;
+    }
+
+    private Tile almostToTile(Tile target) {
+        double scale = 0.8;
+        return closestOnMM(new Tile((int)(getLocalPlayer().getX() + scale*(target.getX() - getLocalPlayer().getX())), (int)(getLocalPlayer().getY() + scale*(target.getY() - getLocalPlayer().getY()))));
     }
 
     private Tile closestOnMM(Tile target) {
@@ -313,9 +358,9 @@ public class NVSPestControl extends AbstractScript {
         return false;
     }
 
-    private void walk(Tile target, double nextClick, int accuracy, long timeout) {
+    private void walk(Tile target) {
         Tile next = closestOnMM(target);
-        if (next.distance(getLocalPlayer()) < 2*accuracy) {
+        if (next.distance(getLocalPlayer()) < walkingAccuracy) {
             sleep(666, 1337);
             return;
         }
@@ -328,32 +373,32 @@ public class NVSPestControl extends AbstractScript {
         List<GameObject> gates = getGameObjects().all(gateFilter);
         for (GameObject gate : gates) {
             if (doorCheck.contains(gate)) {
-                log("Found a gate");
                 openGate(gate, 6789);
-                sleepUntilDistance(1, 1000);
-                sleep(444, 888);
+                sleep(responsiveness, 2*responsiveness);
                 break;
             }
         }
 
-        if (next == null || next.distance(getLocalPlayer()) > 18) return;
-        getWalking().walk(next);
+        if (next.distance(getLocalPlayer()) > 18) return;
+        try {
+            getWalking().walk(next);
+        } catch (NullPointerException ignore) { return; }
         sleep((int) Calculations.nextGaussianRandom(666, 111));
-        if (getCamera().getPitch() < 300 && Calculations.random(0, 50) < 40) {
+        if (getCamera().getPitch() < 300 && Calculations.random(0, 50) < 25*getClient().seededRandom()) {
             getCamera().rotateToPitch(Calculations.random(380, 500));
         }
-        if (getWalking().getDestination() != null && getWalking().getDestination().distance(target) < 2*accuracy)
-            sleepUntilDistance(2*accuracy, Calculations.random(4444, 6666));
+        if (getWalking().getDestination() != null && getWalking().getDestination().distance(target) < walkingAccuracy)
+            sleepUntilDistance(walkingAccuracy, Calculations.random(4444, 6666));
         else
-            sleepUntilDistance(nextClick, Calculations.random(4444, 11111));
+            sleepUntilDistance(walkingInterval, Calculations.random(4444, 11111));
     }
 
     /* Activate quick prayers and special */
     private void activate() {
-        if (!getWidgets().getChildWidget(548, 87).getText().equals("0")) {
-            if (Calculations.random(0, 100) < Calculations.random(0, likelyhood))
+        if (useQuickPrayer && !getWidgets().getChildWidget(548, 87).getText().equals("0")) {
+            if (Calculations.random(0, 1000) < Calculations.random(0, likelihood))
                 getPrayer().toggleQuickPrayer(true);
-            likelyhood = Math.max(Calculations.random(10, 20), likelyhood - 10);
+            likelihood = Math.max(Calculations.random(100, 200), likelihood - (int)(100*getClient().seededRandom()));
         }
     }
 
@@ -363,7 +408,7 @@ public class NVSPestControl extends AbstractScript {
         knightTile = null;
         portals = new HashMap<>();
         wOpen = swOpen = seOpen = eOpen = false;
-        likelyhood = 70;
+        likelihood = (int)(700*getClient().seededRandom());
     }
 
     /* Filter to find the Squire inside a PC game */
@@ -371,20 +416,18 @@ public class NVSPestControl extends AbstractScript {
 
     private Filter<NPC> portalFilter = npc -> npc.getName().equals("Portal") && npc.isInCombat();
 
-    private Filter<GameObject> gateFilter = obj -> obj.getName().equals("Gate") && obj.hasAction("Open") && obj.getID() != 14245 && obj.getID() != 14247;
+    private Filter<GameObject> gateFilter = obj -> obj.getName().equals("Gate") && obj.hasAction("Open") && !obj.hasAction("Repair") && obj.getID() != 14245 && obj.getID() != 14247;
 
     private boolean openGate(GameObject gate, long timeout) {
         state = "Opening gate";
         long start = System.currentTimeMillis();
         Tile gateTile = gate.getTile();
         while (System.currentTimeMillis() - start < timeout && gate != null && gate.distance(gateTile) < 2 && gate.hasAction("Open")) {
-            if (gate.isOnScreen()) {
-                getMouse().move(gate.getCenterPoint());
-                sleep(20, 50);
-                gate.interact("Open");
-                sleep(300, 456);
+            if (gate.isOnScreen() || gate.distance(getLocalPlayer()) < distance) {
+                if (gate.interact("Open"))
+                    sleep(responsiveness, responsiveness*2);
             } else {
-                getMouse().click(getClient().getViewport().tileToScreen(closestOnScreen(gate.getTile())));
+                getWalking().walk(almostToTile(gate.getTile()));
                 sleep(222, 666);
                 sleepUntilDistance(1, 3000);
             }
@@ -445,7 +488,7 @@ public class NVSPestControl extends AbstractScript {
 
     private boolean nearPortal() {
         NPC portal = getNpcs().closest("Portal");
-        return portal != null && portal.distance(getLocalPlayer()) < distance;
+        return portal != null && portal.distance(getLocalPlayer()) <= distance;
     }
 
     private Filter<NPC> nearMobsFilter = npc -> {
@@ -454,7 +497,46 @@ public class NVSPestControl extends AbstractScript {
     };
 
     private boolean nearMobs() {
-        return getNpcs().all(nearMobsFilter).size() >= Math.max(1, Calculations.nextGaussianRandom(2, 1));
+        try {
+            return getNpcs().all(nearMobsFilter).size() >= Math.max(1, Calculations.nextGaussianRandom(2, 1));
+        } catch (ArrayIndexOutOfBoundsException ignore) {
+            return false;
+        }
+    }
+
+    private Filter<Player> playerFilter = Entity::isOnScreen;
+
+    private void antiban() {
+        int random = (int)(Calculations.random(getSkills().getRealLevel(Skill.HITPOINTS) + getSkills().getRealLevel(Skill.ATTACK)
+                + getSkills().getRealLevel(Skill.STRENGTH) + getSkills().getRealLevel(Skill.DEFENCE)
+                + getSkills().getRealLevel(Skill.RANGED) + getSkills().getRealLevel(Skill.MAGIC) + responsiveness
+                + Integer.valueOf(getWidgets().getChildWidget(548, 77).getText()) // current health
+                + pointsGained) * (getLocalPlayer().getLevel()/10*getClient().seededRandom()));
+        int a1 = Math.max(5, Calculations.random(getSkills().getRealLevel(Skill.values()[Calculations.random(22)])));
+        int a2 = a1 + Math.max(10, Calculations.random(getWalking().getRunEnergy() + getSkills().getRealLevel(Skill.values()[Calculations.random(22)])));
+        int a3 = a2 + Math.max(5, Calculations.random(getSkills().getRealLevel(Skill.values()[Calculations.random(22)])));
+        int a4 = a3 + Math.max(5, Calculations.random(getSkills().getRealLevel(Skill.values()[Calculations.random(22)])));
+        int a5 = a4 + Math.max(5, Calculations.random(getSkills().getRealLevel(Skill.values()[Calculations.random(22)])));
+        int a6 = a5 + Math.max(5, Calculations.random(getSkills().getRealLevel(Skill.values()[Calculations.random(22)])));
+        if (random < a1) {
+            state = "Antiban - mouse off screen";
+            getMouse().moveMouseOutsideScreen();
+        } else if (random < a2) {
+            state = "Antiban - move randomly";
+            getMouse().move(new Point(Calculations.random(760), Calculations.random(499)));
+        } else if (random < a3 && getNpcs().closest(nearMobsFilter) != null) {
+            state = "Antiban - move to npc";
+            getMouse().move(getNpcs().closest(nearMobsFilter));
+        } else if (random < a4 && getPlayers().all(playerFilter).size() > 0) {
+            state = "Antiban - move to player";
+            getMouse().click(getPlayers().all(playerFilter).get(Calculations.random(getPlayers().all(playerFilter).size())), true);
+        } else if (random < a5) {
+            state = "Antiban - move camera";
+            getCamera().rotateTo(Calculations.random(2000), Calculations.random(400));
+        } else if (random < a6) {
+            state = "Antiban - open tab";
+            getTabs().openWithMouse(Tab.values()[Calculations.random(Tab.values().length)]);
+        }
     }
 
     @Override
@@ -487,9 +569,9 @@ public class NVSPestControl extends AbstractScript {
         g.setColor(Color.white);
 
         g.setFont(font1);
-        g.drawString("State: " + state, 200, 370);
-        g.drawString("XP Gained (Hr): " + xpGained + " (" + (int)(xpGained*(3600/(double)runtime)) + ")", 200, 385);
-        g.drawString("Points Gained (Hr): " + pointsGained + " (" + (int)(pointsGained*(3600/(double)runtime)) + ")", 200, 400);
-        g.drawString("Time running: " + String.format("%02d:%02d:%02d", runtime / 3600, (runtime % 3600) / 60, runtime % 60), 200, 415);
+        g.drawString("State: " + state, 8, 287);
+        g.drawString("XP Gained (Hr): " + xpGained + " (" + (int)(xpGained*(3600/(double)runtime)) + ")", 8, 302);
+        g.drawString("Points Gained (Hr): " + pointsGained + " (" + (int)(pointsGained*(3600/(double)runtime)) + ")", 8, 317);
+        g.drawString("Time running: " + String.format("%02d:%02d:%02d", runtime / 3600, (runtime % 3600) / 60, runtime % 60), 8, 332);
     }
 }
